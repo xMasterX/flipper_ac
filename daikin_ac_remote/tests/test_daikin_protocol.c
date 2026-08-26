@@ -49,7 +49,266 @@ static int decode(const uint32_t* t, size_t n, uint8_t* st) {
     return 1;
 }
 
+
+// ---------------------------------------------------------------------------
+// The seven other frame formats the Setup screen can select.
+//
+// Each is checked structurally - header timings, section split, checksums -
+// and against the handful of fields the app actually drives. The checksums
+// are transcribed from IRremoteESP8266's own routines, not copied from the
+// encoder.
+// ---------------------------------------------------------------------------
+
+#define FAILF(...)           \
+    do {                     \
+        printf("  FAIL: ");  \
+        printf(__VA_ARGS__); \
+        printf("\n");        \
+        fails++;             \
+    } while(0)
+
+typedef struct {
+    const char* name;
+    uint8_t model;
+    uint8_t len;
+    uint8_t sec1; // 0 when the frame is not two headed sections
+    uint16_t hdr_mark, hdr_space, bit_mark, one_space, zero_space;
+    uint32_t gap;
+    uint8_t lead_pairs; // leader mark/space bursts before the header
+    uint8_t lead_bits; // zero bits before the header
+} VariantSpec;
+
+static const VariantSpec SPECS[] = {
+    {"ARC477", DaikinModelArc477, 39, 20, 3500, 1728, 460, 1270, 420, 35204, 1, 0},
+    {"ARC484", DaikinModel216, 27, 8, 3440, 1750, 420, 1300, 450, 29650, 0, 0},
+    {"ARC423", DaikinModel160, 20, 7, 5000, 2145, 342, 1786, 700, 29650, 0, 0},
+    {"BRC4C15", DaikinModel176, 22, 7, 5070, 2140, 370, 1780, 710, 29410, 0, 0},
+    {"ARC480", DaikinModel152, 19, 0, 3492, 1718, 433, 1529, 433, 25182, 0, 5},
+    {"BRC52B", DaikinModel128, 16, 8, 4600, 2500, 350, 954, 382, 20300, 2, 0},
+};
+
+/// Read `bytes` bytes, least significant bit first.
+static size_t read_bytes(
+    const uint32_t* t,
+    size_t n,
+    size_t i,
+    const VariantSpec* v,
+    int bytes,
+    uint8_t* out) {
+    for(int byte = 0; byte < bytes; byte++) {
+        uint8_t val = 0;
+        for(int b = 0; b < 8; b++) {
+            if(i + 1 >= n) {
+                FAILF("%s: ran out of timings in byte %d", v->name, byte);
+                return 0;
+            }
+            if(t[i] != v->bit_mark) {
+                FAILF("%s: bad bit mark %u at byte %d", v->name, t[i], byte);
+                return 0;
+            }
+            if(t[i + 1] == v->one_space) {
+                val |= (uint8_t)(1 << b);
+            } else if(t[i + 1] != v->zero_space) {
+                FAILF("%s: bad space %u at byte %d", v->name, t[i + 1], byte);
+                return 0;
+            }
+            i += 2;
+        }
+        out[byte] = val;
+    }
+    return i;
+}
+
+static int decode_variant(const uint32_t* t, size_t n, const VariantSpec* v, uint8_t* st) {
+    size_t i = 0;
+
+    for(uint8_t k = 0; k < v->lead_pairs; k++) {
+        if(i + 1 >= n) {
+            FAILF("%s: no leader burst %u", v->name, k);
+            return 0;
+        }
+        i += 2;
+    }
+    for(uint8_t k = 0; k < v->lead_bits; k++) {
+        if(i + 1 >= n || t[i] != v->bit_mark || t[i + 1] != v->zero_space) {
+            FAILF("%s: leader bit %u is not a zero", v->name, k);
+            return 0;
+        }
+        i += 2;
+    }
+    if(v->lead_bits) {
+        if(i + 1 >= n || t[i] != v->bit_mark || t[i + 1] != v->gap) {
+            FAILF("%s: no gap after the leader bits", v->name);
+            return 0;
+        }
+        i += 2;
+    }
+
+    if(i + 1 >= n || t[i] != v->hdr_mark || t[i + 1] != v->hdr_space) {
+        FAILF("%s: bad header %u/%u", v->name, t[i], t[i + 1]);
+        return 0;
+    }
+    i += 2;
+
+    int first = v->sec1 ? v->sec1 : v->len;
+    i = read_bytes(t, n, i, v, first, st);
+    if(!i) return 0;
+
+    if(v->sec1) {
+        if(i + 1 >= n || t[i] != v->bit_mark || t[i + 1] != v->gap) {
+            FAILF("%s: no gap between sections", v->name);
+            return 0;
+        }
+        i += 2;
+        // BRC52B's second section has no header of its own.
+        if(v->model != DaikinModel128) {
+            if(i + 1 >= n || t[i] != v->hdr_mark || t[i + 1] != v->hdr_space) {
+                FAILF("%s: section 2 has no header", v->name);
+                return 0;
+            }
+            i += 2;
+        }
+        i = read_bytes(t, n, i, v, v->len - v->sec1, st + v->sec1);
+        if(!i) return 0;
+    }
+    if(i != n - 1) FAILF("%s: %zu timings left over", v->name, n - 1 - i);
+    return 1;
+}
+
+static uint8_t ref_sum(const uint8_t* p, int n) {
+    uint8_t s = 0;
+    for(int i = 0; i < n; i++) s = (uint8_t)(s + p[i]);
+    return s;
+}
+
+static uint8_t ref_nibbles(const uint8_t* p, int n, uint8_t init) {
+    uint8_t s = init;
+    for(int i = 0; i < n; i++) s = (uint8_t)(s + (p[i] >> 4) + (p[i] & 0x0F));
+    return s;
+}
+
+static void check_variant_checksums(const VariantSpec* v, const uint8_t* st) {
+    switch(v->model) {
+    case DaikinModel128: {
+        uint8_t want1 = ref_nibbles(st, 7, (uint8_t)(st[7] & 0x0F)) & 0x0F;
+        if((st[7] >> 4) != want1) FAILF("%s: sum1 %u, wanted %u", v->name, st[7] >> 4, want1);
+        uint8_t want2 = ref_nibbles(st + 8, 7, 0);
+        if(st[15] != want2) FAILF("%s: sum2 %02X, wanted %02X", v->name, st[15], want2);
+        break;
+    }
+    case DaikinModel152: {
+        uint8_t want = ref_sum(st, v->len - 1);
+        if(st[v->len - 1] != want) FAILF("%s: sum %02X, wanted %02X", v->name, st[v->len - 1], want);
+        break;
+    }
+    default: {
+        uint8_t want1 = ref_sum(st, v->sec1 - 1);
+        if(st[v->sec1 - 1] != want1)
+            FAILF("%s: sum1 %02X, wanted %02X", v->name, st[v->sec1 - 1], want1);
+        uint8_t want2 = ref_sum(st + v->sec1, v->len - v->sec1 - 1);
+        if(st[v->len - 1] != want2)
+            FAILF("%s: sum2 %02X, wanted %02X", v->name, st[v->len - 1], want2);
+        break;
+    }
+    }
+}
+
+static void test_variants(void) {
+    printf("the seven other frame formats\n");
+
+    for(size_t k = 0; k < sizeof(SPECS) / sizeof(SPECS[0]); k++) {
+        const VariantSpec* v = &SPECS[k];
+
+        for(int m = DaikinModeCool; m < DaikinModeCount; m++) {
+            for(int f = 0; f < DaikinFanCount; f++) {
+                for(uint8_t temp = 18; temp <= 30; temp += 4) {
+                    DaikinRequest req = {
+                        (DaikinMode)m, (DaikinFan)f, temp, 0, v->model};
+                    uint32_t t[DAIKIN_IR_MAX_TIMINGS];
+                    size_t n = 0;
+                    if(!daikin_ir_encode_state(&req, t, &n)) {
+                        FAILF("%s: encode failed for mode %d temp %u", v->name, m, temp);
+                        continue;
+                    }
+                    uint8_t st[64];
+                    if(!decode_variant(t, n, v, st)) goto next;
+                    check_variant_checksums(v, st);
+                }
+            }
+        }
+
+        // Power off must clear the power bit, and the checksums must follow.
+        {
+            DaikinRequest req = {DaikinModeCool, DaikinFanLow, 24, 0, v->model};
+            uint32_t t[DAIKIN_IR_MAX_TIMINGS];
+            size_t n = 0;
+            if(daikin_ir_encode_toggle(&req, DaikinTogglePowerOff, t, &n)) {
+                uint8_t st[64];
+                if(decode_variant(t, n, v, st)) check_variant_checksums(v, st);
+            } else {
+                FAILF("%s: power-off encode failed", v->name);
+            }
+        }
+    next:;
+    }
+
+    // DGS01 is a single 64-bit word rather than a byte array, so it gets its
+    // own check: two leader bursts, a header, 64 bits, a closing mark.
+    {
+        DaikinRequest req = {DaikinModeCool, DaikinFanLow, 24, 0, DaikinModel64};
+        uint32_t t[DAIKIN_IR_MAX_TIMINGS];
+        size_t n = 0;
+        if(!daikin_ir_encode_state(&req, t, &n)) {
+            FAILF("DGS01: encode failed");
+        } else {
+            size_t i = 4; // two leader bursts
+            if(t[i] != 4600 || t[i + 1] != 2500) FAILF("DGS01: bad header");
+            i += 2;
+            uint64_t raw = 0;
+            for(int b = 0; b < 64; b++) {
+                if(t[i] != 350) FAILF("DGS01: bad bit mark at %d", b);
+                if(t[i + 1] == 954) raw |= 1ULL << b;
+                else if(t[i + 1] != 382) FAILF("DGS01: bad space at %d", b);
+                i += 2;
+            }
+            // Four-bit sum of every nibble below bit 60.
+            uint64_t data = raw & ((1ULL << 60) - 1);
+            uint8_t sum = 0;
+            for(; data; data >>= 4) sum = (uint8_t)(sum + (data & 0x0F));
+            if(((raw >> 60) & 0x0F) != (sum & 0x0F))
+                FAILF("DGS01: checksum %u, wanted %u", (unsigned)((raw >> 60) & 0xF), sum & 0xF);
+            if(!((raw >> 51) & 1)) FAILF("DGS01: power bit not set");
+        }
+    }
+
+    // The picker must actually change the signal.
+    size_t lens[DaikinModelCount];
+    for(uint8_t model = 0; model < DaikinModelCount; model++) {
+        DaikinRequest req = {DaikinModeCool, DaikinFanLow, 24, 0, model};
+        uint32_t t[DAIKIN_IR_MAX_TIMINGS];
+        lens[model] = 0;
+        if(!daikin_ir_encode_state(&req, t, &lens[model]))
+            FAILF("model %u: encode failed", model);
+    }
+    for(uint8_t a = 0; a < DaikinModelCount; a++) {
+        for(uint8_t b = (uint8_t)(a + 1); b < DaikinModelCount; b++) {
+            if(lens[a] == lens[b])
+                FAILF("models %u and %u produce the same length %zu", a, b, lens[a]);
+        }
+    }
+
+    DaikinRequest bad = {DaikinModeCool, DaikinFanLow, 24, 0, DaikinModelCount};
+    uint32_t t[DAIKIN_IR_MAX_TIMINGS];
+    size_t n = 0;
+    if(daikin_ir_encode_state(&bad, t, &n)) FAILF("an unknown model was accepted");
+
+    if(daikin_ir_get_option_count() != DaikinModelCount)
+        FAILF("the Setup picker does not offer every model");
+}
+
 int main(void) {
+    test_variants();
+
     uint32_t t[DAIKIN_IR_MAX_TIMINGS];
     size_t n = 0;
     uint8_t st[35];

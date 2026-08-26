@@ -1,7 +1,8 @@
 # Flipper Zero AC remote apps
 
-Fifteen infrared air-conditioner remotes for the Flipper Zero, one app per IR
-protocol. Each lives in its own folder and builds independently with
+Nineteen infrared air-conditioner remotes for the Flipper Zero, one app per IR
+protocol, plus a detector that tells you which one you need. Each lives in its
+own folder and builds independently with
 [ufbt](https://github.com/flipperdevices/flipperzero-ufbt).
 
 **Why separate apps rather than one universal remote?** Because you only own
@@ -22,13 +23,65 @@ nothing on screen that does nothing.
 | [fujitsu_ac_remote](fujitsu_ac_remote) | Fujitsu, 16 B + 7 B | Fujitsu General, OGeneral |
 | [gree_ac_remote](gree_ac_remote) | Gree, 8 B | Amana, Cooper & Hunter, EKOKAI, RusClimate, Soleus Air |
 | [haier_ac_remote](haier_ac_remote) | Haier YR-W02, 14 B | Daichi, Mabe |
+| [kelon_ac_remote](kelon_ac_remote) | Kelon, 48-bit | Hisense, AUX |
+| [kelvinator_ac_remote](kelvinator_ac_remote) | Kelvinator, 16 B | **Gree YAP0F8/YAPOF3**, **Sharp A5VEY/YB1FA**, Green |
 | [lg_ac_remote](lg_ac_remote) | LG / LG2, 28-bit | General Electric |
 | [midea_ac_remote](midea_ac_remote) | Midea, 48-bit | Comfee, Danby, Kaysun, Keystone, Lennox, MrCool, Pioneer, Trotec |
+| [mitsubishi_ac_remote](mitsubishi_ac_remote) | Mitsubishi Electric, 18 B | MSZ / MSH / MLZ series |
 | [mitsubishi_heavy_ac_remote](mitsubishi_heavy_ac_remote) | Mitsubishi Heavy ZM-S, 19 B | |
 | [neoclima_ac_remote](neoclima_ac_remote) | Neoclima, 12 B | Soleus Air |
 | [panasonic_ac_remote](panasonic_ac_remote) | Panasonic, 27 B | |
+| [samsung_ac_remote](samsung_ac_remote) | Samsung AR, 14 B + 21 B | |
 | [tcl_ac_remote](tcl_ac_remote) | TCL112, 14 B | Daewoo, Electrolux, Leberg, Teknopoint |
 | [toshiba_ac_remote](toshiba_ac_remote) | Toshiba, 9 B | Carrier (some) |
+
+## Which app do I need?
+
+Install **[ac_detector](ac_detector)** first, point your existing remote at the
+Flipper's infrared window and press Power. It reads the frame, names the
+protocol, lists the brands that ship it, and tells you which app above to use.
+
+This matters more than it sounds, because the name on the front of an air
+conditioner often has nothing to do with the protocol inside it. A Tornado, a
+Vivax and a Beko may all speak Coolix; a Ballu speaks Electra; a Sharp may
+speak Kelvinator. The detector reads what the remote actually sends.
+
+Mitsubishi Electric and Mitsubishi Heavy Industries are different companies
+with different protocols, and both have an app here. Kelvinator is worth
+calling out too: Gree's YAP0F8 and YAPOF3 handsets and Sharp's A5VEY speak it,
+not their own makers' protocols.
+
+It knows 70 frame formats across 54 protocols and around 100 brands —
+considerably more than this repo has apps for — so it will also tell you when
+your unit uses something we have not built a remote for yet, and print the
+payload so you can report it. Signals it cannot make sense of, such as flicker from lamps or a
+switching supply, are filtered out and never disturb the reading on screen.
+See [ac_detector/docs/DETECTION.md](ac_detector/docs/DETECTION.md) for how it
+decides.
+
+## Model pickers
+
+Several manufacturers ship more than one frame format, and nothing in a
+received signal says which one a given unit wants. Those apps put a **Model**
+row on the Setup screen; the choice is saved to the SD card and survives a
+restart. The names match what AC Detector prints on its Model page, so you can
+read the format off the detector and pick the same entry.
+
+| App | Models |
+|-----|--------|
+| daikin | ARC433, ARC477, ARC484, ARC423, BRC4C15, ARC480, BRC52B, DGS01 |
+| haier | YR-W02, HSU07, AC160, AC176 |
+| mitsubishi | 144-bit, 112-bit, 136-bit |
+| fujitsu | ARDB1, ARJW2, ARRAH2E, ARREB1E, ARREW4E, ARRY4 |
+| gree | YAW1F, YBOFB, YX1FSF |
+| kelon | RCH-R0Y3, DG11R2 |
+| mitsubishi_heavy | ZM-S, ZJ-S |
+| lg, midea, panasonic, toshiba | see each app's Setup screen |
+
+Samsung is the exception: its 21-byte "extended" frame is a message type
+rather than a model — a real handset sends it for power, timer and sleep
+changes and the short one otherwise — so the app does the same automatically
+and offers no choice.
 
 ## Building
 
