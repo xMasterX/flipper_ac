@@ -1,6 +1,6 @@
 # Flipper Zero AC remote apps
 
-Nineteen infrared air-conditioner remotes for the Flipper Zero, one app per IR
+Twenty infrared air-conditioner remotes for the Flipper Zero, one app per IR
 protocol, plus a detector that tells you which one you need. Each lives in its
 own folder and builds independently with
 [ufbt](https://github.com/flipperdevices/flipperzero-ufbt).
@@ -21,6 +21,7 @@ nothing on screen that does nothing.
 | [daikin_ac_remote](daikin_ac_remote) | Daikin ARC433, 35 B | |
 | [delonghi_ac_remote](delonghi_ac_remote) | De'Longhi PAC A95, 64-bit | |
 | [fujitsu_ac_remote](fujitsu_ac_remote) | Fujitsu, 16 B + 7 B | Fujitsu General, OGeneral |
+| [goodweather_ac_remote](goodweather_ac_remote) | Goodweather, 48-bit | **Rapid** |
 | [gree_ac_remote](gree_ac_remote) | Gree, 8 B | Amana, Cooper & Hunter, EKOKAI, RusClimate, Soleus Air |
 | [haier_ac_remote](haier_ac_remote) | Haier YR-W02, 14 B | Daichi, Mabe |
 | [kelon_ac_remote](kelon_ac_remote) | Kelon, 48-bit | Hisense, AUX |
